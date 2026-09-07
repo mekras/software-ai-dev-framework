@@ -20,6 +20,21 @@ def walk(value: Any):
             yield from walk(child)
 
 
+def extract_answer(events: list[Any], fallback: str) -> str:
+    """Собрать все видимые сообщения ассистента за ход."""
+    messages = []
+    for event in events:
+        if not isinstance(event, dict) or event.get("type") != "item.completed":
+            continue
+        item = event.get("item")
+        if not isinstance(item, dict) or item.get("type") != "agent_message":
+            continue
+        value = item.get("text")
+        if isinstance(value, str) and value.strip():
+            messages.append(value)
+    return "\n\n".join(messages) if messages else fallback
+
+
 def main() -> int:
     if len(sys.argv) != 6 or sys.argv[1] not in {"start", "resume"}:
         print(
@@ -103,7 +118,12 @@ def main() -> int:
         return 1
     result = {
         "session_id": active_session,
-        "answer": answer_path.read_text(encoding="utf-8") if answer_path.exists() else "",
+        "answer": extract_answer(
+            events,
+            answer_path.read_text(encoding="utf-8")
+            if answer_path.exists()
+            else "",
+        ),
         "commands": sorted(set(commands)),
         "usage": usage,
     }

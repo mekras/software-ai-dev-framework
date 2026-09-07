@@ -772,8 +772,9 @@ class ProductEvalTest(unittest.TestCase):
             "turns": [
                 "Режим менеджера: полный. Маршрут: запросить решение о повторе.",
                 (
-                    "Критерий и проверка готовы, риск указан. "
-                    "Передаю на приёмку."
+                    "Режим менеджера: полный. Маршрут: выполнить решение. "
+                    "Критерий и проверка готовы, риск указан. Передаю на "
+                    "приёмку."
                 ),
             ],
             "before_owner": {"status": "", "diff": ""},
@@ -781,7 +782,7 @@ class ProductEvalTest(unittest.TestCase):
             "metrics": {
                 "commands": ["python3 -m unittest"],
                 "usage": {},
-                "routing_opened": True,
+                "routing_opened_by_turn": [True, True],
             },
         }
         with tempfile.TemporaryDirectory() as temp:
@@ -789,12 +790,13 @@ class ProductEvalTest(unittest.TestCase):
             (workdir / "result.txt").write_text("done", encoding="utf-8")
             metrics = MODULE.rescore_result(scenario, result, workdir)
         self.assertTrue(metrics["routing_opened"])
+        self.assertEqual([True, True], metrics["routing_opened_by_turn"])
         self.assertNotIn(
-            "Новая сессия не открыла ait-routing/SKILL.md.",
+            "Ход 2 не открыл ait-routing/SKILL.md.",
             metrics["missed_mandatory_actions"],
         )
 
-    def test_routing_requires_trace_and_first_response(self):
+    def test_routing_requires_trace_and_response_in_each_turn(self):
         scenario = {
             "expected_artifact_groups": [
                 {"label": "результат", "any_of": ["result.txt"]},
@@ -810,7 +812,10 @@ class ProductEvalTest(unittest.TestCase):
             "usage": {},
         }
         second = {
-            "answer": "Критерий и проверка готовы, риск указан. Передаю на приёмку.",
+            "answer": (
+                "Режим менеджера: полный. Маршрут: выполнить решение. "
+                "Критерий и проверка готовы, риск указан. Передаю на приёмку."
+            ),
             "commands": ["python3 -m unittest"],
             "usage": {},
         }
@@ -824,10 +829,148 @@ class ProductEvalTest(unittest.TestCase):
                 {"status": "", "diff": ""},
                 {"status": " M result.txt\n", "diff": ""},
                 workdir,
-                routing_opened=False,
+                routing_opened=[True, False],
             )
         self.assertIn(
-            "Новая сессия не открыла ait-routing/SKILL.md.",
+            "Ход 2 не открыл ait-routing/SKILL.md.",
+            metrics["missed_mandatory_actions"],
+        )
+        self.assertFalse(metrics["routing_opened"])
+
+    def test_routing_reports_each_missing_turn_independently(self):
+        scenario = {
+            "expected_artifact_groups": [
+                {"label": "результат", "any_of": ["result.txt"]},
+            ],
+            "required_commands": ["python3 -m unittest"],
+            "handoff_markers": ["приём", "критер", "проверк", "риск"],
+            "routing_markers": ["режим менеджера", "маршрут"],
+            "decision_marker_groups": [["повтор"]],
+        }
+        first = {
+            "answer": "Запрашиваю решение о повторе.",
+            "commands": [],
+            "usage": {},
+        }
+        second = {
+            "answer": "Критерий и проверка готовы, риск указан. На приёмку.",
+            "commands": ["python3 -m unittest"],
+            "usage": {},
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            workdir = Path(temp)
+            (workdir / "result.txt").write_text("done", encoding="utf-8")
+            metrics = MODULE.score_run(
+                scenario,
+                first,
+                second,
+                {"status": "", "diff": ""},
+                {"status": " M result.txt\n", "diff": ""},
+                workdir,
+                routing_opened=[False, False],
+            )
+        missed = metrics["missed_mandatory_actions"]
+        for turn in (1, 2):
+            self.assertIn(
+                f"Ход {turn} не открыл ait-routing/SKILL.md.",
+                missed,
+            )
+            self.assertTrue(
+                any(
+                    item.startswith(
+                        f"Ответ хода {turn} не показал маршрут",
+                    )
+                    for item in missed
+                ),
+            )
+
+    def test_routing_trace_checks_all_turn_combinations(self):
+        scenario = {
+            "expected_artifact_groups": [
+                {"label": "результат", "any_of": ["result.txt"]},
+            ],
+            "required_commands": ["python3 -m unittest"],
+            "handoff_markers": ["приём", "критер", "проверк", "риск"],
+            "routing_markers": ["режим менеджера", "маршрут"],
+            "decision_marker_groups": [["повтор"]],
+        }
+        first = {
+            "answer": (
+                "Режим менеджера: полный. Маршрут: запросить решение о "
+                "повторе."
+            ),
+            "commands": [],
+            "usage": {},
+        }
+        second = {
+            "answer": (
+                "Режим менеджера: полный. Маршрут: выполнить решение. "
+                "Критерий и проверка готовы, риск указан. На приёмку."
+            ),
+            "commands": ["python3 -m unittest"],
+            "usage": {},
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            workdir = Path(temp)
+            (workdir / "result.txt").write_text("done", encoding="utf-8")
+            for trace in (
+                [True, True],
+                [True, False],
+                [False, True],
+                [False, False],
+            ):
+                with self.subTest(trace=trace):
+                    metrics = MODULE.score_run(
+                        scenario,
+                        first,
+                        second,
+                        {"status": "", "diff": ""},
+                        {"status": " M result.txt\n", "diff": ""},
+                        workdir,
+                        routing_opened=trace,
+                    )
+                    self.assertEqual(all(trace), metrics["routing_opened"])
+                    self.assertEqual(trace, metrics["routing_opened_by_turn"])
+                    for turn, opened in enumerate(trace, start=1):
+                        message = (
+                            f"Ход {turn} не открыл ait-routing/SKILL.md."
+                        )
+                        self.assertEqual(
+                            not opened,
+                            message in metrics["missed_mandatory_actions"],
+                        )
+
+    def test_rescore_legacy_trace_cannot_prove_second_turn(self):
+        scenario = {
+            "expected_artifact_groups": [
+                {"label": "результат", "any_of": ["result.txt"]},
+            ],
+            "required_commands": ["python3 -m unittest"],
+            "handoff_markers": ["приём", "критер", "проверк", "риск"],
+            "routing_markers": ["режим менеджера", "маршрут"],
+            "decision_marker_groups": [["повтор"]],
+        }
+        answer = "Режим менеджера: полный. Маршрут: продолжить."
+        result = {
+            "turns": [
+                answer + " Решение о повторе?",
+                answer + " На приёмку: критерий, проверка, риск.",
+            ],
+            "before_owner": {"status": "", "diff": ""},
+            "final_state": {"status": " M result.txt\n", "diff": ""},
+            "metrics": {
+                "commands": ["python3 -m unittest"],
+                "usage": {},
+                "routing_opened": True,
+            },
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            workdir = Path(temp)
+            (workdir / "result.txt").write_text("done", encoding="utf-8")
+            metrics = MODULE.rescore_result(scenario, result, workdir)
+        self.assertEqual([True, None], metrics["routing_opened_by_turn"])
+        self.assertIn(
+            "Ход 2 не открыл ait-routing/SKILL.md.",
             metrics["missed_mandatory_actions"],
         )
 

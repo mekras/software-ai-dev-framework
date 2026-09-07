@@ -21,6 +21,31 @@ def walk(value: Any):
             yield from walk(child)
 
 
+def extract_answer(events: list[Any], fallback: str) -> str:
+    """Собрать все видимые текстовые сообщения ассистента за ход."""
+    messages = []
+    for event in events:
+        if not isinstance(event, dict) or event.get("type") != "assistant":
+            continue
+        message = event.get("message")
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        texts = [
+            block["text"]
+            for block in content
+            if isinstance(block, dict)
+            and block.get("type") == "text"
+            and isinstance(block.get("text"), str)
+            and block["text"].strip()
+        ]
+        if texts:
+            messages.append("\n".join(texts))
+    return "\n\n".join(messages) if messages else fallback
+
+
 def main() -> int:
     if len(sys.argv) != 6 or sys.argv[1] not in {"start", "resume"}:
         print(
@@ -87,7 +112,7 @@ def main() -> int:
         json.dumps(
             {
                 "session_id": session_id,
-                "answer": answer,
+                "answer": extract_answer(events, answer),
                 "commands": sorted(set(commands)),
                 "usage": usage,
             },
